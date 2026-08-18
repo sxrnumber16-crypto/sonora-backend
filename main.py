@@ -119,7 +119,7 @@ def yt_extract_stream_sync(video_id: str) -> dict:
     now = time.time()
     if video_id in STREAM_CACHE:
         cached_time, cached_data = STREAM_CACHE[video_id]
-        if now - cached_time < CACHE_TTL_SECONDS:
+        if now - cached_time < CACHE_TTL_SECONDS and "raw_stream_url" in cached_data:
             return cached_data
 
     url = f"https://www.youtube.com/watch?v={video_id}"
