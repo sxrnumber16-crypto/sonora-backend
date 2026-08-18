@@ -2,9 +2,11 @@ import asyncio
 import os
 import time
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import requests
 import uvicorn
 import yt_dlp
 
@@ -114,7 +116,6 @@ def yt_search_sync(query: str, limit: int = 15) -> List[dict]:
 
 
 def yt_extract_stream_sync(video_id: str) -> dict:
-    # Check cache first
     now = time.time()
     if video_id in STREAM_CACHE:
         cached_time, cached_data = STREAM_CACHE[video_id]
@@ -141,8 +142,8 @@ def yt_extract_stream_sync(video_id: str) -> dict:
         if not info:
             raise Exception("Could not extract YouTube video info")
 
-        stream_url = info.get("url")
-        if not stream_url:
+        raw_url = info.get("url")
+        if not raw_url:
             formats = info.get("formats", [])
             audio_formats = [
                 f for f in formats
@@ -150,11 +151,11 @@ def yt_extract_stream_sync(video_id: str) -> dict:
             ]
             if audio_formats:
                 best_audio = max(audio_formats, key=lambda f: f.get("abr") or 0)
-                stream_url = best_audio.get("url")
+                raw_url = best_audio.get("url")
             elif formats:
-                stream_url = formats[-1].get("url")
+                raw_url = formats[-1].get("url")
 
-        if not stream_url:
+        if not raw_url:
             raise Exception("No playable audio stream URL found for this video")
 
         title = info.get("title") or "Unknown Song"
@@ -163,7 +164,7 @@ def yt_extract_stream_sync(video_id: str) -> dict:
         thumbnail = info.get("thumbnail") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
         mime_type = "audio/mp4"
-        if "ext=webm" in stream_url or ".webm" in stream_url:
+        if "ext=webm" in raw_url or ".webm" in raw_url:
             mime_type = "audio/webm"
 
         result = {
@@ -172,11 +173,10 @@ def yt_extract_stream_sync(video_id: str) -> dict:
             "channel": channel,
             "thumbnail": thumbnail,
             "duration_seconds": duration,
-            "stream_url": stream_url,
+            "raw_stream_url": raw_url,
             "mime_type": mime_type,
         }
 
-        # Store in cache
         STREAM_CACHE[video_id] = (now, result)
         return result
 
@@ -195,18 +195,75 @@ async def search_youtube(
 
 @app.get("/api/stream", response_model=StreamResponse)
 async def get_stream_url(
+    req: Request,
     video_id: str = Query(..., min_length=1, description="YouTube Video ID"),
 ):
     try:
         data = await asyncio.to_thread(yt_extract_stream_sync, video_id)
-        return StreamResponse(**data)
+        base = str(req.base_url).rstrip("/")
+        proxy_url = f"{base}/api/audio/{video_id}"
+        return StreamResponse(
+            video_id=data["video_id"],
+            title=data["title"],
+            channel=data["channel"],
+            thumbnail=data["thumbnail"],
+            duration_seconds=data["duration_seconds"],
+            stream_url=proxy_url,
+            mime_type=data["mime_type"],
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Audio extraction failed: {str(e)}")
 
 
 @app.get("/api/stream/{video_id}", response_model=StreamResponse)
-async def get_stream_url_path(video_id: str):
-    return await get_stream_url(video_id=video_id)
+async def get_stream_url_path(req: Request, video_id: str):
+    return await get_stream_url(req=req, video_id=video_id)
+
+
+@app.get("/api/audio/{video_id}")
+async def proxy_audio_stream(video_id: str, req: Request):
+    try:
+        data = await asyncio.to_thread(yt_extract_stream_sync, video_id)
+        raw_url = data["raw_stream_url"]
+        mime_type = data.get("mime_type", "audio/mp4")
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        client_range = req.headers.get("range")
+        if client_range:
+            headers["Range"] = client_range
+
+        upstream_req = requests.get(raw_url, headers=headers, stream=True, timeout=30)
+
+        def iterfile():
+            try:
+                for chunk in upstream_req.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            except Exception:
+                pass
+
+        resp_headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": mime_type,
+            "Cache-Control": "public, max-age=3600",
+        }
+        if "Content-Range" in upstream_req.headers:
+            resp_headers["Content-Range"] = upstream_req.headers["Content-Range"]
+        if "Content-Length" in upstream_req.headers:
+            resp_headers["Content-Length"] = upstream_req.headers["Content-Length"]
+
+        status_code = upstream_req.status_code if upstream_req.status_code in [200, 206] else 200
+
+        return StreamingResponse(
+            iterfile(),
+            status_code=status_code,
+            media_type=mime_type,
+            headers=resp_headers,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio streaming proxy failed: {str(e)}")
 
 
 if __name__ == "__main__":
