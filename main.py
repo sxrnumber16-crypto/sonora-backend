@@ -266,6 +266,59 @@ async def proxy_audio_stream(video_id: str, req: Request):
         raise HTTPException(status_code=500, detail=f"Audio streaming proxy failed: {str(e)}")
 
 
+@app.get("/api/download/{video_id}")
+async def download_audio_stream(video_id: str, req: Request):
+    try:
+        data = await asyncio.to_thread(yt_extract_stream_sync, video_id)
+        raw_url = data["raw_stream_url"]
+        title = data.get("title", "YouTube_Song").replace("/", "_").replace("\\", "_")
+        mime_type = data.get("mime_type", "audio/mp4")
+        ext = "m4a" if "mp4" in mime_type else "webm"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        client_range = req.headers.get("range")
+        if client_range:
+            headers["Range"] = client_range
+
+        upstream_req = requests.get(raw_url, headers=headers, stream=True, timeout=30)
+
+        def iterfile():
+            try:
+                for chunk in upstream_req.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            except Exception:
+                pass
+
+        safe_filename = "".join(c for c in title if c.isalnum() or c in (" ", "_", "-")).rstrip()
+        if not safe_filename:
+            safe_filename = f"youtube_{video_id}"
+
+        resp_headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": mime_type,
+            "Content-Disposition": f'attachment; filename="{safe_filename}.{ext}"',
+            "Cache-Control": "public, max-age=3600",
+        }
+        if "Content-Range" in upstream_req.headers:
+            resp_headers["Content-Range"] = upstream_req.headers["Content-Range"]
+        if "Content-Length" in upstream_req.headers:
+            resp_headers["Content-Length"] = upstream_req.headers["Content-Length"]
+
+        status_code = upstream_req.status_code if upstream_req.status_code in [200, 206] else 200
+
+        return StreamingResponse(
+            iterfile(),
+            status_code=status_code,
+            media_type=mime_type,
+            headers=resp_headers,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio download failed: {str(e)}")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
