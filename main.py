@@ -129,6 +129,11 @@ def yt_extract_stream_sync(video_id: str) -> dict:
         "skip_download": True,
         "nocheckcertificate": True,
         "geo_bypass": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
+            }
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
