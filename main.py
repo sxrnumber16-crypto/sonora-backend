@@ -1,9 +1,11 @@
 import asyncio
+import os
 import time
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uvicorn
 import yt_dlp
 
 app = FastAPI(
@@ -200,3 +202,8 @@ async def get_stream_url(
 @app.get("/api/stream/{video_id}", response_model=StreamResponse)
 async def get_stream_url_path(video_id: str):
     return await get_stream_url(video_id=video_id)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
