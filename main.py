@@ -123,40 +123,47 @@ def yt_extract_stream_sync(video_id: str) -> dict:
         if now - cached_time < CACHE_TTL_SECONDS and "raw_stream_url" in cached_data:
             return cached_data
 
-    # Try pytubefix with WEB client first
-    try:
-        yt = YouTube(f"https://www.youtube.com/watch?v={video_id}", client="WEB")
-        stream = yt.streams.get_audio_only()
-        if stream and stream.url:
-            title = yt.title or "Unknown Song"
-            channel = yt.author or "YouTube Artist"
-            duration = int(yt.length or 0)
-            thumbnail = yt.thumbnail_url or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-            mime_type = "audio/mp4" if "mp4" in (stream.mime_type or "") else "audio/webm"
+    # Multi-client pytubefix attempt
+    clients = ["WEB", "MWEB", "ANDROID"]
+    for c in clients:
+        try:
+            yt = YouTube(f"https://www.youtube.com/watch?v={video_id}", client=c)
+            stream = yt.streams.get_audio_only()
+            if stream and stream.url:
+                title = yt.title or "Unknown Song"
+                channel = yt.author or "YouTube Artist"
+                duration = int(yt.length or 0)
+                thumbnail = yt.thumbnail_url or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                mime_type = "audio/mp4" if "mp4" in (stream.mime_type or "") else "audio/webm"
 
-            result = {
-                "video_id": video_id,
-                "title": title,
-                "channel": channel,
-                "thumbnail": thumbnail,
-                "duration_seconds": duration,
-                "raw_stream_url": stream.url,
-                "mime_type": mime_type,
-            }
-            STREAM_CACHE[video_id] = (now, result)
-            return result
-    except Exception:
-        pass
+                result = {
+                    "video_id": video_id,
+                    "title": title,
+                    "channel": channel,
+                    "thumbnail": thumbnail,
+                    "duration_seconds": duration,
+                    "raw_stream_url": stream.url,
+                    "mime_type": mime_type,
+                }
+                STREAM_CACHE[video_id] = (now, result)
+                return result
+        except Exception:
+            continue
 
     # Fallback to yt-dlp
     url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "format": "ba/b/18",
         "skip_download": True,
         "nocheckcertificate": True,
         "geo_bypass": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb", "android", "web"]
+            }
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -253,6 +260,7 @@ async def proxy_audio_stream(video_id: str, req: Request):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "*/*",
             "Accept-Encoding": "identity",
+            "Referer": "https://www.youtube.com/",
         }
         client_range = req.headers.get("range")
         if client_range:
@@ -303,6 +311,7 @@ async def download_audio_stream(video_id: str, req: Request):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "*/*",
             "Accept-Encoding": "identity",
+            "Referer": "https://www.youtube.com/",
         }
         client_range = req.headers.get("range")
         if client_range:
