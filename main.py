@@ -222,7 +222,7 @@ async def get_stream_url(
 ):
     try:
         data = await asyncio.to_thread(yt_extract_stream_sync, video_id)
-        base = str(req.base_url).rstrip("/")
+        base = str(req.base_url).rstrip("/").replace("http://", "https://")
         proxy_url = f"{base}/api/audio/{video_id}"
         return StreamResponse(
             video_id=data["video_id"],
